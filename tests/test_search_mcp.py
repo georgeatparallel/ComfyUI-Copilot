@@ -14,11 +14,19 @@ except ImportError:
     httpx2 = None
 import pytest
 from agents import Agent, function_tool
+try:
+    from mcp import MCPError
+except ImportError:
+    from mcp import McpError as MCPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from backend.service import search_mcp
 from backend.utils import globals as settings
 from backend.utils.request_context import clear_request_context, set_request_context
+
+
+def tool_failed(result):
+    return result.is_error if hasattr(result, "is_error") else result.isError
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +66,10 @@ class ProtocolFixture:
         method = body["method"]
         if self.failure == "discovery":
             return response_type(503, text="fixture service unavailable")
+        if method == "server/discover":
+            # Match the live endpoint: MCP v2 clients negotiate its v1 protocol.
+            return response_type(400, json={"jsonrpc": "2.0", "id": body["id"],
+                "error": {"code": -32601, "message": "Use MCP initialize"}})
         if method == "initialize":
             result = {"protocolVersion": body["params"]["protocolVersion"], "capabilities": {"tools": {}},
                       "serverInfo": {"name": "parallel-fixture", "version": "1"}}
@@ -278,7 +290,7 @@ async def test_explicit_parallel_keeps_hosted_credentials_private(protocol, monk
         assert core and provider == "parallel"
         assert len(servers) == 2
         result = await servers[1].call_tool("web_fetch", {"urls": ["https://docs.comfy.org/custom-nodes/overview"]})
-        assert not result.isError and "INPUT_TYPES" in result.content[0].text
+        assert not tool_failed(result) and "INPUT_TYPES" in result.content[0].text
     assert hosted[0]["headers"]["Authorization"] == "Bearer saved-key"
     assert protocol.calls == 1  # The protocol fixture also rejects credentials on every Parallel request.
 
@@ -289,13 +301,12 @@ async def test_errors_urls_and_no_fallback(protocol):
                                            "session", None, settings.BACKEND_BASE_URL) as (servers, _, _):
         server = servers[0]
         invalid = await server.call_tool("web_fetch", {"urls": ["file:///etc/passwd"]})
-        assert invalid.isError and "HTTP or HTTPS" in invalid.content[0].text
+        assert tool_failed(invalid) and "HTTP or HTTPS" in invalid.content[0].text
         protocol.failure = "tool"
         error = await server.call_tool("web_search", {"objective": "x", "search_queries": ["x"]})
-        assert error.isError and "fixture search failed" in error.content[0].text
+        assert tool_failed(error) and "fixture search failed" in error.content[0].text
         protocol.failure = "rpc"
-        from mcp import McpError
-        with pytest.raises(McpError, match="fixture service unavailable"):
+        with pytest.raises(MCPError, match="fixture service unavailable"):
             await server.call_tool("web_search", {"objective": "x", "search_queries": ["x"]})
     assert all(str(r.url) == search_mcp.PARALLEL_MCP_URL for r, _ in protocol.requests)
     assert protocol.calls == 3
@@ -331,7 +342,6 @@ async def test_timeout_and_cancellation(protocol):
 
 @pytest.mark.asyncio
 async def test_sdk_call_deadline(protocol, monkeypatch):
-    from mcp import McpError
     real_server = search_mcp.MCPServerStreamableHttp
     def short_deadline(**kwargs):
         assert kwargs["client_session_timeout_seconds"] == 30.0
@@ -342,7 +352,7 @@ async def test_sdk_call_deadline(protocol, monkeypatch):
     async with search_mcp.agent_mcp_servers({"copilot_api_key": None}, "session", None,
                                            settings.BACKEND_BASE_URL) as (servers, _, _):
         protocol.failure = "wait"
-        with pytest.raises(McpError, match="[Tt]imed out"):
+        with pytest.raises(MCPError, match="[Tt]imed out"):
             await servers[0].call_tool("web_fetch", {"urls": ["https://docs.comfy.org"]})
     assert protocol.calls == 1
 
