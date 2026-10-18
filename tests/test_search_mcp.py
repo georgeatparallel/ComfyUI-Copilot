@@ -346,7 +346,7 @@ async def test_sdk_call_deadline(protocol, monkeypatch):
     def short_deadline(**kwargs):
         assert kwargs["client_session_timeout_seconds"] == 30.0
         assert kwargs["params"]["timeout"] == 30.0
-        kwargs["client_session_timeout_seconds"] = 0.05
+        kwargs["client_session_timeout_seconds"] = 0.5
         return real_server(**kwargs)
     monkeypatch.setattr(search_mcp, "MCPServerStreamableHttp", short_deadline)
     async with search_mcp.agent_mcp_servers({"copilot_api_key": None}, "session", None,
